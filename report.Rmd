@@ -1,0 +1,172 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Khanh Nguyen"
+date: "September 26, 2015"
+output: 
+  html_document:
+    keep_md: true
+---
+
+#Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+This project uses data from accelerometers on the belt, forearm, arm, and dumbell of 6 research study participants. The training data consists of accelerometer data and a label identifying the quality of the activity the participant was doing. The testing data consists of accelerometer data without the identifying label. The goal is to predict the labels for the test set observations. Below is the code I used when creating the model, estimating the out-of-sample error, and making predictions. The description of each step of the process is given in details.
+
+#Data Preprocessing
+
+```{r, echo=FALSE}
+library(caret)
+library(corrplot)
+```
+
+##Download the Data
+
+```{r, echo=TRUE}
+trainUrl <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainFile <- "./data/pml-training.csv"
+testFile  <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(trainFile)) {
+  download.file(trainUrl, destfile=trainFile)
+}
+if (!file.exists(testFile)) {
+  download.file(testUrl, destfile=testFile)
+}
+```
+
+##Load the Data
+
+After downloading the data from the data source, we can read the two csv files into two data frames.
+
+```{r, echo=TRUE}
+trainData <- read.csv("./data/pml-training.csv")
+testData <- read.csv("./data/pml-testing.csv")
+dim(trainData)
+dim(testData)
+```
+
+The training data set contains `r nrow(trainData)` observations and `r dim(trainData)` variables, while the testing data set contains `r nrow(testData)` observations and `r dim(testData)` variables. The "classe" variable in the training set is the outcome to predict.
+
+##Clean the Data
+
+In this step, I am going to reduce the number of features by removing variables with nearly zero variance, variables that are almost always NA, and variables that don't make intuitive sense for prediction.
+
+
+```{r, echo=TRUE}
+# remove variables with nearly zero variance
+nzv <- nearZeroVar(trainData)
+trainData <- trainData[, -nzv]
+testData <- testData[, -nzv]
+# remove variables that are almost always NA
+mostlyNA <- sapply(trainData, function(x) mean(is.na(x))) > 0.95
+trainData <- trainData[, mostlyNA==F]
+testData <- testData[, mostlyNA==F]
+```
+
+Next, remove some columns that do not contribute much to the accelerometer measurements.
+
+```{r, echo=TRUE}
+# Remove variables which do not contribute much to the accelerometer measurements.
+removeIndex <- grep("timestamp|X|user_name|new_window", names(trainData))
+trainData <- trainData[, -removeIndex]
+# Show remaining columns of training data.
+colnames(trainData)
+testData <- testData[, -removeIndex]
+# Show remaining columns of testing data.
+colnames(testData)
+```
+
+Now, the cleaned training data set `r nrow(trainData)` observations and `r dim(trainData)` variables, while the testing data set contains `r nrow(testData)` observations and `r dim(testData)` variables.
+
+##Prepare Data for Cross Validation
+
+Since I want to be able to estimate the out-of-sample error, I randomly split the full training data into a smaller training set (70%) and a validation set (30%). We will use the validation data set to conduct cross validation in future steps.
+
+```{r, echo=TRUE}
+set.seed(10) # reproducibile purpose
+inTrain <- createDataPartition(trainData$classe, p=0.7, list=F)
+subTraining <- trainData[inTrain, ]
+subValidation <- trainData[-inTrain, ]
+```
+
+#Model Buiding
+
+We fit a predictive model for activity recognition using Random Forest algorithm because it automatically selects important variables and is robust to correlated covariates & outliers in general. We will use 5-fold cross validation when applying the algorithm.
+
+
+I decided to start with a Random Forest model, to see if it would have acceptable performance. I fit the model on trainData1, and instruct the training function to use 3-fold cross-validation to select optimal tuning parameters for the model.
+
+```{r, echo=TRUE}
+#instruct training function to use 3-fold CV to select optimal tuning parameters
+fitControl <- trainControl(method="cv", 3, verboseIter=F)
+# Check if model file exists
+savedModel <- "fitModel.RData"
+if (!file.exists(savedModel)) {
+    # construct the model
+    rfFitModel <- train(subTraining$classe ~ ., method = "rf", data = subTraining,  trControl=fitControl)
+    # save the model
+    save(rfFitModel, file = "fitModel.RData")
+} else {
+    # model exists from previous run, load it and use it.  
+    load(file = "fitModel.RData", verbose = TRUE)
+}
+# print final model to see tuning parameters
+rfFitModel$finalModel
+```
+As, can be seen the model uses 500 trees and 27 variables at each split.
+From the model, the following are the list of important predictors in the model.
+
+```{r, echo=TRUE}
+varImp(rfFitModel)
+```
+#Model Evaluation: Accuracy and Out of Sample Error Estimates
+Now, I use the fitted model to evaluate the performance of the model on the validation data set, and show the confusion matrix to compare the predicted versus the actual labels:
+
+
+```{r, echo=TRUE}
+# use model to predict classe in validation data set
+preds <- predict(rfFitModel, subValidation)
+
+# show confusion matrix to get estimate of out-of-sample error
+confusionMatrix(subValidation$classe, preds)
+```
+
+So, the accuracy of the model is 99.78% and thus the out-of-sample error is 0.22%. 
+The perpformance is reasonable, so rather than trying additional algorithms, I will use Random Forests to predict on the test set.
+
+
+#Apply the Prediction Model
+
+Now, I apply the model to the full testing data set.
+
+```{r, echo=TRUE}
+# predict on test set
+preds <- predict(rfFitModel, testData)
+
+# convert predictions to character vector
+preds <- as.character(preds)
+preds
+# create function to write predictions to files
+pml_write_files <- function(x) {
+    n <- length(x)
+    for(i in 1:n) {
+        filename <- paste0("problem_id_", i, ".txt")
+        write.table(x[i], file=filename, quote=F, row.names=F, col.names=F)
+    }
+}
+
+# create prediction files to submit
+pml_write_files(preds)
+```
+
+#Appendix: 
+
+##Correlation Matrix Visualization
+```{r, echo=TRUE}
+corrPlot <- cor(trainData[, -length(names(trainData))])
+corrplot(corrPlot, method="color")
+```
